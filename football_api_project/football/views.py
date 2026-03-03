@@ -136,3 +136,93 @@ def matches_collection(request):
         })
 
     return JsonResponse({"count": len(matches), "matches": matches}, status=200)
+
+
+@csrf_exempt
+def league_table(request):
+    """
+    GET /api/analytics/table/?season=2021-2022
+    Computes league standings from Match rows for that season.
+    Points: Win=3, Draw=1, Loss=0
+    Sorting: points desc, gd desc, gf desc, name asc
+    """
+    if request.method != "GET":
+        return _json_error("Method not allowed", 405)
+
+    season_name = request.GET.get("season")
+    if not season_name:
+        return _json_error("Query parameter 'season' is required (e.g. season=2021-2022)", 400)
+
+    # validate season exists
+    try:
+        season = Season.objects.get(name=season_name)
+    except Season.DoesNotExist:
+        return _json_error("Season not found", 404)
+
+    matches = Match.objects.select_related("home_team", "away_team").filter(season=season)
+
+    # Initialize stats for every team seen in this season
+    team_stats = {}
+
+    def ensure_team(team):
+        if team.id not in team_stats:
+            team_stats[team.id] = {
+                "team_id": team.id,
+                "team": team.name,
+                "played": 0,
+                "wins": 0,
+                "draws": 0,
+                "losses": 0,
+                "gf": 0,
+                "ga": 0,
+                "gd": 0,
+                "points": 0,
+            }
+
+    for m in matches:
+        home = m.home_team
+        away = m.away_team
+        ensure_team(home)
+        ensure_team(away)
+
+        hs = m.home_score
+        as_ = m.away_score
+
+        team_stats[home.id]["played"] += 1
+        team_stats[away.id]["played"] += 1
+
+        team_stats[home.id]["gf"] += hs
+        team_stats[home.id]["ga"] += as_
+
+        team_stats[away.id]["gf"] += as_
+        team_stats[away.id]["ga"] += hs
+
+        if hs > as_:
+            team_stats[home.id]["wins"] += 1
+            team_stats[away.id]["losses"] += 1
+            team_stats[home.id]["points"] += 3
+        elif hs < as_:
+            team_stats[away.id]["wins"] += 1
+            team_stats[home.id]["losses"] += 1
+            team_stats[away.id]["points"] += 3
+        else:
+            team_stats[home.id]["draws"] += 1
+            team_stats[away.id]["draws"] += 1
+            team_stats[home.id]["points"] += 1
+            team_stats[away.id]["points"] += 1
+
+    # goal difference
+    for tid in team_stats:
+        team_stats[tid]["gd"] = team_stats[tid]["gf"] - team_stats[tid]["ga"]
+
+    rows = list(team_stats.values())
+    rows.sort(key=lambda r: (-r["points"], -r["gd"], -r["gf"], r["team"]))
+
+    # add rank
+    for i, r in enumerate(rows, start=1):
+        r["position"] = i
+
+    return JsonResponse(
+        {"season": season.name, "teams": len(rows), "table": rows},
+        status=200
+    )
