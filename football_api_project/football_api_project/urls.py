@@ -21,5 +21,9 @@ from football import views
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/health/", views.health),
+
+    path("api/teams/", views.teams_collection),
+    path("api/teams/<int:team_id>/", views.team_item),
+
+    path("api/matches/", views.matches_collection),
 ]
