@@ -28,4 +28,8 @@ urlpatterns = [
     path("api/matches/", views.matches_collection),
 
     path("api/analytics/table/", views.league_table),
+
+    path("api/analytics/performance/", views.performance_summary),
+
+    path("api/analytics/win-probability/", views.win_probability),
 ]
