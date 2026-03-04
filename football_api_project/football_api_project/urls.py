@@ -32,4 +32,6 @@ urlpatterns = [
     path("api/analytics/performance/", views.performance_summary),
 
     path("api/analytics/win-probability/", views.win_probability),
+
+    path("api/analytics/win-probability/batch/", views.win_probability_batch),
 ]

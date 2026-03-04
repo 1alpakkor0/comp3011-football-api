@@ -394,6 +394,65 @@ def _poisson_pmf(k: int, lam: float) -> float:
 def _clamp(x, lo, hi):
     return max(lo, min(hi, x))
 
+
+def _compute_poisson_win_probs(season_matches, league_home_avg, league_away_avg, home_team, away_team, max_goals):
+    """
+    Returns: (lam_home, lam_away, p_home_win, p_draw, p_away_win)
+    Uses the same logic as win_probability.
+    """
+    home_home = season_matches.filter(home_team=home_team)
+    away_away = season_matches.filter(away_team=away_team)
+
+    home_home_n = home_home.count()
+    away_away_n = away_away.count()
+    if home_home_n == 0 or away_away_n == 0:
+        return None  # insufficient data
+
+    home_scored_home = sum(m.home_score for m in home_home) / home_home_n
+    home_conceded_home = sum(m.away_score for m in home_home) / home_home_n
+
+    away_scored_away = sum(m.away_score for m in away_away) / away_away_n
+    away_conceded_away = sum(m.home_score for m in away_away) / away_away_n
+
+    home_attack_strength = home_scored_home / league_home_avg if league_home_avg > 0 else 1.0
+    away_defence_weakness = away_conceded_away / league_home_avg if league_home_avg > 0 else 1.0
+
+    away_attack_strength = away_scored_away / league_away_avg if league_away_avg > 0 else 1.0
+    home_defence_weakness = home_conceded_home / league_away_avg if league_away_avg > 0 else 1.0
+
+    raw_lam_home = league_home_avg * home_attack_strength * away_defence_weakness
+    raw_lam_away = league_away_avg * away_attack_strength * home_defence_weakness
+
+    lam_home = _clamp(raw_lam_home, 0.1, 5.0)
+    lam_away = _clamp(raw_lam_away, 0.1, 5.0)
+
+    p_home_win = 0.0
+    p_draw = 0.0
+    p_away_win = 0.0
+
+    for hg in range(0, max_goals + 1):
+        p_hg = _poisson_pmf(hg, lam_home)
+        for ag in range(0, max_goals + 1):
+            p_ag = _poisson_pmf(ag, lam_away)
+            p = p_hg * p_ag
+            if hg > ag:
+                p_home_win += p
+            elif hg == ag:
+                p_draw += p
+            else:
+                p_away_win += p
+
+    total = p_home_win + p_draw + p_away_win
+    if total > 0:
+        p_home_win /= total
+        p_draw /= total
+        p_away_win /= total
+
+    return (lam_home, lam_away, p_home_win, p_draw, p_away_win)
+
+
+
+
 @csrf_exempt
 def win_probability(request):
     """
@@ -565,3 +624,123 @@ def win_probability(request):
         }
 
     return JsonResponse(resp, status=200)
+
+
+@csrf_exempt
+def win_probability_batch(request):
+    """
+    GET /api/analytics/win-probability/batch/?season=2021-2022&team=Arsenal&venue=home&max_goals=6
+    venue: home | away | both
+    Returns probabilities vs every opponent team in that season.
+    """
+    if request.method != "GET":
+        return _json_error("Method not allowed", 405)
+
+    season_name = request.GET.get("season")
+    team_name = request.GET.get("team") or request.GET.get("home")  # allow home alias
+    venue = (request.GET.get("venue") or "home").lower()
+    max_goals = request.GET.get("max_goals", "6")
+
+    if not season_name:
+        return _json_error("Query parameter 'season' is required", 400)
+    if not team_name:
+        return _json_error("Query parameter 'team' is required (or use 'home' as alias)", 400)
+
+    if venue not in {"home", "away", "both"}:
+        return _json_error("Query parameter 'venue' must be one of: home, away, both", 400)
+
+    try:
+        max_goals = int(max_goals)
+        if max_goals < 3 or max_goals > 10:
+            return _json_error("'max_goals' must be between 3 and 10", 400)
+    except ValueError:
+        return _json_error("'max_goals' must be an integer", 400)
+
+    try:
+        season = Season.objects.get(name=season_name)
+    except Season.DoesNotExist:
+        return _json_error("Season not found", 404)
+
+    try:
+        base_team = Team.objects.get(name__iexact=team_name)
+    except Team.DoesNotExist:
+        return _json_error("Team not found", 404)
+
+    season_matches = Match.objects.select_related("home_team", "away_team").filter(season=season)
+    n_matches = season_matches.count()
+    if n_matches == 0:
+        return _json_error("No matches available for this season", 400)
+
+    # league averages
+    total_home_goals = sum(m.home_score for m in season_matches)
+    total_away_goals = sum(m.away_score for m in season_matches)
+    league_home_avg = total_home_goals / n_matches
+    league_away_avg = total_away_goals / n_matches
+
+    # Finding opponents for all teams that played in the season excluding base_team
+    team_ids = set()
+    for m in season_matches:
+        team_ids.add(m.home_team_id)
+        team_ids.add(m.away_team_id)
+
+    opponents = Team.objects.filter(id__in=team_ids).exclude(id=base_team.id).order_by("name")
+
+    results = []
+
+    def pack(home_team, away_team):
+        out = _compute_poisson_win_probs(
+            season_matches=season_matches,
+            league_home_avg=league_home_avg,
+            league_away_avg=league_away_avg,
+            home_team=home_team,
+            away_team=away_team,
+            max_goals=max_goals
+        )
+        if out is None:
+            return None
+        lam_h, lam_a, p_h, p_d, p_a = out
+        return {
+            "home": home_team.name,
+            "away": away_team.name,
+            "lambda_home": round(lam_h, 4),
+            "lambda_away": round(lam_a, 4),
+            "probabilities": {
+                "home_win": round(p_h, 4),
+                "draw": round(p_d, 4),
+                "away_win": round(p_a, 4),
+            }
+        }
+
+    for opp in opponents:
+        if venue == "home":
+            row = pack(base_team, opp)
+            if row:
+                results.append(row)
+        elif venue == "away":
+            row = pack(opp, base_team)
+            if row:
+                results.append(row)
+        else:  # both
+            row_home = pack(base_team, opp)
+            row_away = pack(opp, base_team)
+            if row_home or row_away:
+                results.append({
+                    "opponent": opp.name,
+                    "as_home": row_home,
+                    "as_away": row_away
+                })
+
+    return JsonResponse({
+        "season": season.name,
+        "team": base_team.name,
+        "venue": venue,
+        "model": {
+            "type": "poisson",
+            "max_goals": max_goals,
+            "league_home_avg": round(league_home_avg, 4),
+            "league_away_avg": round(league_away_avg, 4),
+            "matches_used": n_matches
+        },
+        "count": len(results),
+        "results": results
+    }, status=200)
