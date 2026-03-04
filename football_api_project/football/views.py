@@ -744,3 +744,211 @@ def win_probability_batch(request):
         "count": len(results),
         "results": results
     }, status=200)
+
+
+
+@csrf_exempt
+def predict_table(request):
+    """
+    GET /api/analytics/predict-table/?season=2021-2022&max_goals=6
+
+    Produces an expected league table by replacing each match outcome
+    with Poisson-based expected points: xPts_home = 3*P for home_win + 1*P for draw and xPts_away = 3*Pfor away_win + 1*P fordraw
+      
+      
+
+    Also aggregates expected goals using lambdas (xGF/xGA/xGD).
+    """
+    if request.method != "GET":
+        return _json_error("Method not allowed", 405)
+
+    season_name = request.GET.get("season")
+    max_goals = request.GET.get("max_goals", "6")
+
+    if not season_name:
+        return _json_error("Query parameter 'season' is required (e.g. season=2021-2022)", 400)
+
+    try:
+        max_goals = int(max_goals)
+        if max_goals < 3 or max_goals > 10:
+            return _json_error("'max_goals' must be between 3 and 10", 400)
+    except ValueError:
+        return _json_error("'max_goals' must be an integer", 400)
+
+    try:
+        season = Season.objects.get(name=season_name)
+    except Season.DoesNotExist:
+        return _json_error("Season not found", 404)
+
+    matches = (
+        Match.objects
+        .select_related("home_team", "away_team")
+        .filter(season=season)
+        .order_by("date", "id")
+    )
+
+    n_matches = matches.count()
+    if n_matches == 0:
+        return _json_error("No matches available for this season", 400)
+
+    
+    # League averages
+    
+    total_home_goals = 0
+    total_away_goals = 0
+
+    # Also gather team ids in this season
+    team_ids = set()
+
+    for m in matches:
+        total_home_goals += m.home_score
+        total_away_goals += m.away_score
+        team_ids.add(m.home_team_id)
+        team_ids.add(m.away_team_id)
+
+    league_home_avg = total_home_goals / n_matches
+    league_away_avg = total_away_goals / n_matches
+
+    # Precompute per team home and away scoring rates so we do not have to filter every single data
+
+    home_stats = {}
+    away_stats = {}
+
+    def ensure(stats_dict, tid):
+        if tid not in stats_dict:
+            stats_dict[tid] = {"n": 0, "scored": 0, "conceded": 0}
+
+    for m in matches:
+        ensure(home_stats, m.home_team_id)
+        ensure(away_stats, m.away_team_id)
+
+        home_stats[m.home_team_id]["n"] += 1
+        home_stats[m.home_team_id]["scored"] += m.home_score
+        home_stats[m.home_team_id]["conceded"] += m.away_score
+
+        away_stats[m.away_team_id]["n"] += 1
+        away_stats[m.away_team_id]["scored"] += m.away_score
+        away_stats[m.away_team_id]["conceded"] += m.home_score
+
+  
+    # Initialise expected table rows
+
+    teams = Team.objects.filter(id__in=team_ids)
+    x = {}
+    for t in teams:
+        x[t.id] = {
+            "team_id": t.id,
+            "team": t.name,
+            "played": 0,
+            "xpoints": 0.0,
+            "xgf": 0.0,
+            "xga": 0.0,
+            "xgd": 0.0,
+        }
+
+
+    # For each match computing poisson probs + expected points
+
+    for m in matches:
+        hid = m.home_team_id
+        aid = m.away_team_id
+
+        if hid not in home_stats or aid not in away_stats:
+            continue
+
+        # Home team rates in home games
+        hh = home_stats[hid]
+        # Away team rates in away games
+        aa = away_stats[aid]
+
+        # per match averages
+        home_scored_home = hh["scored"] / hh["n"]
+        home_conceded_home = hh["conceded"] / hh["n"]
+
+        away_scored_away = aa["scored"] / aa["n"]
+        away_conceded_away = aa["conceded"] / aa["n"]
+
+        # strength ratios relative to league averages
+        home_attack_strength = home_scored_home / league_home_avg if league_home_avg > 0 else 1.0
+        away_defence_weakness = away_conceded_away / league_home_avg if league_home_avg > 0 else 1.0
+
+        away_attack_strength = away_scored_away / league_away_avg if league_away_avg > 0 else 1.0
+        home_defence_weakness = home_conceded_home / league_away_avg if league_away_avg > 0 else 1.0
+
+        # expected goals
+        lam_home = _clamp(league_home_avg * home_attack_strength * away_defence_weakness, 0.1, 5.0)
+        lam_away = _clamp(league_away_avg * away_attack_strength * home_defence_weakness, 0.1, 5.0)
+
+        # probs from Poisson (0..max_goals)
+        p_home_win = 0.0
+        p_draw = 0.0
+        p_away_win = 0.0
+
+        for hg in range(0, max_goals + 1):
+            p_hg = _poisson_pmf(hg, lam_home)
+            for ag in range(0, max_goals + 1):
+                p_ag = _poisson_pmf(ag, lam_away)
+                p = p_hg * p_ag
+                if hg > ag:
+                    p_home_win += p
+                elif hg == ag:
+                    p_draw += p
+                else:
+                    p_away_win += p
+
+        # normalising
+        total = p_home_win + p_draw + p_away_win
+        if total > 0:
+            p_home_win /= total
+            p_draw /= total
+            p_away_win /= total
+
+        # expected points for this match
+        xpts_home = 3.0 * p_home_win + 1.0 * p_draw
+        xpts_away = 3.0 * p_away_win + 1.0 * p_draw
+
+        # aggregate
+        x[hid]["played"] += 1
+        x[aid]["played"] += 1
+
+        x[hid]["xpoints"] += xpts_home
+        x[aid]["xpoints"] += xpts_away
+
+        # expected goals using lambdas
+        x[hid]["xgf"] += lam_home
+        x[hid]["xga"] += lam_away
+
+        x[aid]["xgf"] += lam_away
+        x[aid]["xga"] += lam_home
+
+    # finish xgd and rounding
+    rows = []
+    for tid, r in x.items():
+        r["xgd"] = r["xgf"] - r["xga"]
+
+        
+        r["xpoints"] = round(r["xpoints"], 3)
+        r["xgf"] = round(r["xgf"], 3)
+        r["xga"] = round(r["xga"], 3)
+        r["xgd"] = round(r["xgd"], 3)
+
+        rows.append(r)
+
+    # sort like a league xpoints desc, xgd desc, xgf desc, name asc
+    rows.sort(key=lambda r: (-r["xpoints"], -r["xgd"], -r["xgf"], r["team"]))
+
+    for i, r in enumerate(rows, start=1):
+        r["position"] = i
+
+    return JsonResponse({
+        "season": season.name,
+        "model": {
+            "type": "poisson_expected_points",
+            "max_goals": max_goals,
+            "league_home_avg": round(league_home_avg, 4),
+            "league_away_avg": round(league_away_avg, 4),
+            "matches_used": n_matches
+        },
+        "teams": len(rows),
+        "table": rows
+    }, status=200)
