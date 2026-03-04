@@ -18,6 +18,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from football import views
+from django.shortcuts import redirect
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -36,4 +37,7 @@ urlpatterns = [
     path("api/analytics/win-probability/batch/", views.win_probability_batch),
 
     path("api/analytics/predict-table/", views.predict_table),
+
+    path("", lambda request: redirect("/dashboard/")),
+    path("dashboard/", views.dashboard),
 ]
