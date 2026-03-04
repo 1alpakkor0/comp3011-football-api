@@ -397,8 +397,9 @@ def _clamp(x, lo, hi):
 @csrf_exempt
 def win_probability(request):
     """
-    GET /api/analytics/win-probability/?season=2021-2022&home=Arsenal&away=Chelsea&max_goals=6
+    GET /api/analytics/win-probability/?season=2021-2022&home=Arsenal&away=Chelsea&max_goals=6&explain=1
     Returns probabilities for Home/Draw/Away using a Poisson goals model.
+    If explain=1, also returns intermediate stats used to compute lambdas.
     """
     if request.method != "GET":
         return _json_error("Method not allowed", 405)
@@ -407,6 +408,7 @@ def win_probability(request):
     home_name = request.GET.get("home")
     away_name = request.GET.get("away")
     max_goals = request.GET.get("max_goals", "6")
+    explain = request.GET.get("explain", "0") == "1"
 
     if not season_name:
         return _json_error("Query parameter 'season' is required", 400)
@@ -434,7 +436,8 @@ def win_probability(request):
     # Pull all matches for the season
     season_matches = Match.objects.select_related("home_team", "away_team").filter(season=season)
 
-    if season_matches.count() == 0:
+    n_matches = season_matches.count()
+    if n_matches == 0:
         return _json_error("No matches available for this season", 400)
 
     # League averages for home goals and away goals per match
@@ -444,7 +447,6 @@ def win_probability(request):
         total_home_goals += m.home_score
         total_away_goals += m.away_score
 
-    n_matches = season_matches.count()
     league_home_avg = total_home_goals / n_matches
     league_away_avg = total_away_goals / n_matches
 
@@ -452,17 +454,20 @@ def win_probability(request):
     home_home = season_matches.filter(home_team=home_team)
     away_away = season_matches.filter(away_team=away_team)
 
+    home_home_n = home_home.count()
+    away_away_n = away_away.count()
+
     # If a team has no home/away matches guard it
-    if home_home.count() == 0 or away_away.count() == 0:
+    if home_home_n == 0 or away_away_n == 0:
         return _json_error("Insufficient match data for one of the teams", 400)
 
     # Home team: goals scored at home and conceded at home per match
-    home_scored_home = sum(m.home_score for m in home_home) / home_home.count()
-    home_conceded_home = sum(m.away_score for m in home_home) / home_home.count()
+    home_scored_home = sum(m.home_score for m in home_home) / home_home_n
+    home_conceded_home = sum(m.away_score for m in home_home) / home_home_n
 
     # Away team: goals scored away and conceded away per match
-    away_scored_away = sum(m.away_score for m in away_away) / away_away.count()
-    away_conceded_away = sum(m.home_score for m in away_away) / away_away.count()
+    away_scored_away = sum(m.away_score for m in away_away) / away_away_n
+    away_conceded_away = sum(m.home_score for m in away_away) / away_away_n
 
     # Strength ratios relative to league averages
     # attack_strength > 1 means above average scoring
@@ -476,12 +481,12 @@ def win_probability(request):
     # Expected goals lambdas
     # Home expected goals depends on league_home_avg * home_attack_strength * away_defence_weakness
     # Away expected goals depends on league_away_avg * away_attack_strength * home_defence_weakness
-    lam_home = league_home_avg * home_attack_strength * away_defence_weakness
-    lam_away = league_away_avg * away_attack_strength * home_defence_weakness
+    raw_lam_home = league_home_avg * home_attack_strength * away_defence_weakness
+    raw_lam_away = league_away_avg * away_attack_strength * home_defence_weakness
 
     # Prevent extreme weird values
-    lam_home = _clamp(lam_home, 0.1, 5.0)
-    lam_away = _clamp(lam_away, 0.1, 5.0)
+    lam_home = _clamp(raw_lam_home, 0.1, 5.0)
+    lam_away = _clamp(raw_lam_away, 0.1, 5.0)
 
     # Scoreline probabilities (0..max_goals)
     p_home_win = 0.0
@@ -507,7 +512,7 @@ def win_probability(request):
         p_draw /= total
         p_away_win /= total
 
-    return JsonResponse({
+    resp = {
         "season": season.name,
         "home": home_team.name,
         "away": away_team.name,
@@ -524,4 +529,39 @@ def win_probability(request):
             "draw": round(p_draw, 4),
             "away_win": round(p_away_win, 4),
         }
-    }, status=200)
+    }
+
+    if explain:
+        resp["explain"] = {
+            "league": {
+                "matches_used": n_matches,
+                "home_avg_goals_per_match": round(league_home_avg, 4),
+                "away_avg_goals_per_match": round(league_away_avg, 4),
+            },
+            "home_team_home_matches": {
+                "team": home_team.name,
+                "matches": home_home_n,
+                "scored_per_match": round(home_scored_home, 4),
+                "conceded_per_match": round(home_conceded_home, 4),
+                "attack_strength_vs_league_home": round(home_attack_strength, 4),
+                "defence_weakness_vs_league_away": round(home_defence_weakness, 4),
+            },
+            "away_team_away_matches": {
+                "team": away_team.name,
+                "matches": away_away_n,
+                "scored_per_match": round(away_scored_away, 4),
+                "conceded_per_match": round(away_conceded_away, 4),
+                "attack_strength_vs_league_away": round(away_attack_strength, 4),
+                "defence_weakness_vs_league_home": round(away_defence_weakness, 4),
+            },
+            "expected_goals": {
+                "raw_lambda_home": round(raw_lam_home, 4),
+                "raw_lambda_away": round(raw_lam_away, 4),
+                "lambda_home_clamped": round(lam_home, 4),
+                "lambda_away_clamped": round(lam_away, 4),
+                "clamp_range": {"min": 0.1, "max": 5.0},
+                "note": "Lambdas are computed from league averages scaled by attack/defence ratios, then clamped for stability.",
+            },
+        }
+
+    return JsonResponse(resp, status=200)
