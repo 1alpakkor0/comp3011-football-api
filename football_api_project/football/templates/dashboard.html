@@ -1,0 +1,512 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>COMP3011 Football API Dashboard</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 24px;
+      background: #f6f8fb;
+    }
+
+    h1 {
+      margin-bottom: 6px;
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    select,
+    input,
+    button {
+      padding: 8px 10px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+
+    button {
+      cursor: pointer;
+      background: #1f6feb;
+      color: white;
+      border: none;
+    }
+
+    button:hover {
+      background: #174ea6;
+    }
+
+    .danger-btn {
+      background: #c0392b;
+    }
+
+    .danger-btn:hover {
+      background: #922b21;
+    }
+
+    .secondary-btn {
+      background: #555;
+    }
+
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      padding: 16px;
+      margin-top: 16px;
+      background: white;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 12px;
+    }
+
+    th,
+    td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+
+    th {
+      background: #f0f2f5;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #eef2ff;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 13px;
+    }
+
+    .message {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 6px;
+      display: none;
+    }
+
+    .message.success {
+      background: #eafaf1;
+      color: #1e7e34;
+      display: block;
+    }
+
+    .message.error {
+      background: #fdecea;
+      color: #a12622;
+      display: block;
+    }
+  </style>
+</head>
+
+
+<body>
+
+  <h1>Football Analytics Dashboard</h1>
+  <div class="muted">Live analytics using your Football API</div>
+
+
+  <div class="card">
+
+    <div class="row">
+
+      <label>Season:</label>
+
+      <select id="season">
+        <option value="2021-2022">2021-2022</option>
+        <option value="2020-2021">2020-2021</option>
+      </select>
+
+      <button onclick="loadTable()">League Table</button>
+
+      <button onclick="loadXTable()">xPoints Table</button>
+
+    </div>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <div class="row">
+
+      <span class="pill">Win Probability</span>
+
+      <label>Home:</label>
+      <input id="home" value="Arsenal" />
+
+      <label>Away:</label>
+      <input id="away" value="Chelsea" />
+
+      <button onclick="loadWinProb()">Compute</button>
+
+    </div>
+
+    <div id="winprob" class="grid"></div>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <div class="row">
+      <span class="pill">Team CRUD</span>
+      <button class="secondary-btn" onclick="loadTeamsCrud()">Refresh Teams</button>
+    </div>
+
+
+    <div class="grid">
+
+      <div class="card">
+
+        <h3>Create Team</h3>
+
+        <input id="createTeamName" placeholder="Team name" />
+
+        <div style="margin-top:10px;">
+          <button onclick="createTeam()">Create</button>
+        </div>
+
+      </div>
+
+
+
+      <div class="card">
+
+        <h3>Update Team</h3>
+
+        <select id="teamSelectUpdate"></select>
+
+        <div style="height:10px;"></div>
+
+        <input id="updateTeamName" placeholder="New name" />
+
+        <div style="margin-top:10px;">
+          <button onclick="updateTeam()">Update</button>
+        </div>
+
+      </div>
+
+
+
+      <div class="card">
+
+        <h3>Delete Team</h3>
+
+        <select id="teamSelectDelete"></select>
+
+        <div style="margin-top:10px;">
+          <button class="danger-btn" onclick="deleteTeam()">Delete</button>
+        </div>
+
+      </div>
+
+    </div>
+
+
+    <div id="teamCrudMessage" class="message"></div>
+    <div id="teamsCrudTable"></div>
+
+  </div>
+
+
+
+  <div class="card">
+
+    <div id="outputTitle" class="pill">Output</div>
+    <div id="output"></div>
+
+  </div>
+
+
+
+  <script>
+
+
+    function renderTable(rows, columns, title) {
+
+      document.getElementById("outputTitle").textContent = title
+      const out = document.getElementById("output")
+
+      let html = "<table><thead><tr>"
+
+      for (const c of columns)
+        html += `<th>${c.header}</th>`
+
+      html += "</tr></thead><tbody>"
+
+      for (const r of rows) {
+        html += "<tr>"
+
+        for (const c of columns)
+          html += `<td>${r[c.key]}</td>`
+
+        html += "</tr>"
+
+      }
+
+      html += "</tbody></table>"
+
+      out.innerHTML = html
+
+    }
+
+
+
+    async function loadTable() {
+      const season = document.getElementById("season").value
+      const res = await fetch(`/api/analytics/table/?season=${encodeURIComponent(season)}`)
+      const data = await res.json()
+
+      const cols = [
+        { key: "position", header: "#" },
+        { key: "team", header: "Team" },
+        { key: "played", header: "P" },
+        { key: "wins", header: "W" },
+        { key: "draws", header: "D" },
+        { key: "losses", header: "L" },
+        { key: "gf", header: "GF" },
+        { key: "ga", header: "GA" },
+        { key: "gd", header: "GD" },
+        { key: "points", header: "Pts" }
+      ]
+
+      renderTable(data.table, cols, `League Table (${data.season})`)
+
+    }
+
+
+
+    async function loadXTable() {
+
+      const season = document.getElementById("season").value
+
+      const res = await fetch(`/api/analytics/predict-table/?season=${encodeURIComponent(season)}`)
+
+      const data = await res.json()
+
+      const cols = [
+        { key: "position", header: "#" },
+        { key: "team", header: "Team" },
+        { key: "played", header: "P" },
+        { key: "xpoints", header: "xPts" },
+        { key: "xgf", header: "xGF" },
+        { key: "xga", header: "xGA" },
+        { key: "xgd", header: "xGD" }
+      ]
+
+      renderTable(data.table, cols, `xPoints Table (${data.season})`)
+
+    }
+
+
+
+    function renderWinProb(data) {
+      const wp = document.getElementById("winprob")
+      wp.innerHTML =
+
+        `<div class="card">
+
+<div class="pill">Model</div>
+
+<div class="muted">λ_home: <b>${data.model.lambda_home}</b></div>
+
+<div class="muted">λ_away: <b>${data.model.lambda_away}</b></div>
+
+<div class="muted">League avg home: <b>${data.model.league_home_avg}</b></div>
+
+<div class="muted">League avg away: <b>${data.model.league_away_avg}</b></div>
+
+</div>
+
+
+<div class="card">
+
+<div class="pill">Probabilities</div>
+
+<div>Home win: <b>${data.probabilities.home_win}</b></div>
+
+<div>Draw: <b>${data.probabilities.draw}</b></div>
+
+<div>Away win: <b>${data.probabilities.away_win}</b></div>
+
+</div>`
+
+    }
+
+
+
+    async function loadWinProb() {
+      const season = document.getElementById("season").value
+      const home = document.getElementById("home").value
+
+      const away = document.getElementById("away").value
+
+      const url = `/api/analytics/win-probability/?season=${encodeURIComponent(season)}&home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}`
+
+      const res = await fetch(url)
+      const data = await res.json()
+
+      renderWinProb(data)
+    }
+
+
+
+    function showMessage(msg, type) {
+      const box = document.getElementById("teamCrudMessage")
+      box.className = "message " + type
+      box.textContent = msg
+    }
+
+
+
+    async function loadTeamsCrud() {
+
+      const res = await fetch("/api/teams/")
+      const data = await res.json()
+      const teams = data.teams || []
+
+      const updateSelect = document.getElementById("teamSelectUpdate")
+
+      const deleteSelect = document.getElementById("teamSelectDelete")
+
+      updateSelect.innerHTML = ""
+      deleteSelect.innerHTML = ""
+
+      for (const team of teams) {
+
+        const o1 = document.createElement("option")
+        o1.value = team.id
+        o1.textContent = team.id + " - " + team.name
+
+        updateSelect.appendChild(o1)
+
+        const o2 = document.createElement("option")
+        o2.value = team.id
+        o2.textContent = team.id + " - " + team.name
+
+        deleteSelect.appendChild(o2)
+
+      }
+
+      let html = "<table><thead><tr><th>ID</th><th>Name</th></tr></thead><tbody>"
+
+      for (const t of teams)
+        html += `<tr><td>${t.id}</td><td>${t.name}</td></tr>`
+
+      html += "</tbody></table>"
+
+      document.getElementById("teamsCrudTable").innerHTML = html
+
+    }
+
+
+    async function createTeam() {
+
+      const name = document.getElementById("createTeamName").value
+      const res = await fetch("/api/teams/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name })
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        showMessage("Team created: " + data.name, "success")
+        loadTeamsCrud()
+      } else {
+        showMessage(data.error, "error")
+      }
+
+    }
+
+
+
+    async function updateTeam() {
+
+      const id = document.getElementById("teamSelectUpdate").value
+
+      const name = document.getElementById("updateTeamName").value
+
+      const res = await fetch(`/api/teams/${id}/`, {
+
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name })
+
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+
+        showMessage("Team updated", "success")
+        loadTeamsCrud()
+
+      } else {
+        showMessage(data.error, "error")
+      }
+
+    }
+
+
+    async function deleteTeam() {
+      const id = document.getElementById("teamSelectDelete").value;
+
+      if (!id) {
+        showMessage("Please select a team to delete.", "error");
+        return;
+      }
+
+      if (!confirm("Delete this team?")) return;
+
+      try {
+        const res = await fetch(`/api/teams/${id}/`, {
+          method: "DELETE"
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.ok) {
+          showMessage(data.message || "Team deleted successfully.", "success");
+          loadTeamsCrud();
+        } else {
+          showMessage(data.error || `Delete failed (status ${res.status})`, "error");
+        }
+      } catch (err) {
+        showMessage("Delete failed due to a network or server error.", "error");
+      }
+    }
+    loadTeamsCrud()
+
+  </script>
+
+</body>
+</html>

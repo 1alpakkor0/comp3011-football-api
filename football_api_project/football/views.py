@@ -95,7 +95,7 @@ def team_item(request, team_id: int):
 
     if request.method == "DELETE":
         team.delete()
-        return JsonResponse({}, status=204)
+        return JsonResponse({"message": "Team deleted successfully"}, status=200)
 
     return _json_error("Method not allowed", 405)
 
@@ -756,8 +756,6 @@ def predict_table(request):
     Produces an expected league table by replacing each match outcome
     with Poisson-based expected points: xPts_home = 3*P for home_win + 1*P for draw and xPts_away = 3*Pfor away_win + 1*P fordraw
       
-      
-
     Also aggregates expected goals using lambdas (xGF/xGA/xGD).
     """
     if request.method != "GET":
@@ -956,148 +954,5 @@ def predict_table(request):
 
 
 
-def dashboard(request):
-    html = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>COMP3011 Football API Dashboard</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 24px; }
-    h1 { margin-bottom: 8px; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-    select, input, button { padding: 8px 10px; font-size: 14px; }
-    button { cursor: pointer; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin-top: 16px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    th { background: #f6f6f6; }
-    .muted { color: #666; font-size: 13px; }
-    .pill { display:inline-block; padding:2px 8px; border-radius: 999px; background:#eee; font-size:12px; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 12px; }
-  </style>
-</head>
-<body>
-  <h1>Football Analytics Dashboard</h1>
-  <div class="muted">Uses your live API endpoints (league table, expected table, win probability).</div>
-
-  <div class="card">
-    <div class="row">
-      <label>Season:</label>
-      <select id="season">
-        <option value="2021-2022">2021-2022</option>
-        <option value="2020-2021">2020-2021</option>
-      </select>
-
-      <button onclick="loadTable()">League Table</button>
-      <button onclick="loadXTable()">xPoints Table</button>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="row">
-      <span class="pill">Win Probability</span>
-      <label>Home:</label>
-      <input id="home" value="Arsenal"/>
-      <label>Away:</label>
-      <input id="away" value="Chelsea"/>
-      <button onclick="loadWinProb()">Compute</button>
-    </div>
-    <div id="winprob" class="grid"></div>
-  </div>
-
-  <div class="card">
-    <div id="outputTitle" class="pill">Output</div>
-    <div id="output"></div>
-  </div>
-
-<script>
-function renderTable(rows, columns, title) {
-  document.getElementById("outputTitle").textContent = title;
-  const out = document.getElementById("output");
-
-  let html = "<table><thead><tr>";
-  for (const c of columns) html += `<th>${c.header}</th>`;
-  html += "</tr></thead><tbody>";
-
-  for (const r of rows) {
-    html += "<tr>";
-    for (const c of columns) html += `<td>${r[c.key]}</td>`;
-    html += "</tr>";
-  }
-  html += "</tbody></table>";
-  out.innerHTML = html;
-}
-
-async function loadTable() {
-  const season = document.getElementById("season").value;
-  const res = await fetch(`/api/analytics/table/?season=${encodeURIComponent(season)}`);
-  const data = await res.json();
-  const cols = [
-    {key:"position", header:"#"},
-    {key:"team", header:"Team"},
-    {key:"played", header:"P"},
-    {key:"wins", header:"W"},
-    {key:"draws", header:"D"},
-    {key:"losses", header:"L"},
-    {key:"gf", header:"GF"},
-    {key:"ga", header:"GA"},
-    {key:"gd", header:"GD"},
-    {key:"points", header:"Pts"},
-  ];
-  renderTable(data.table, cols, `League Table (${data.season})`);
-}
-
-async function loadXTable() {
-  const season = document.getElementById("season").value;
-  const res = await fetch(`/api/analytics/predict-table/?season=${encodeURIComponent(season)}`);
-  const data = await res.json();
-  const cols = [
-    {key:"position", header:"#"},
-    {key:"team", header:"Team"},
-    {key:"played", header:"P"},
-    {key:"xpoints", header:"xPts"},
-    {key:"xgf", header:"xGF"},
-    {key:"xga", header:"xGA"},
-    {key:"xgd", header:"xGD"},
-  ];
-  renderTable(data.table, cols, `xPoints Table (${data.season})`);
-}
-
-function renderWinProb(data) {
-  const wp = document.getElementById("winprob");
-  wp.innerHTML = `
-    <div class="card"><div class="pill">Model</div>
-      <div class="muted">λ_home: <b>${data.model.lambda_home}</b>, λ_away: <b>${data.model.lambda_away}</b></div>
-      <div class="muted">League avgs: home <b>${data.model.league_home_avg}</b>, away <b>${data.model.league_away_avg}</b></div>
-    </div>
-    <div class="card"><div class="pill">Probabilities</div>
-      <div>Home win: <b>${data.probabilities.home_win}</b></div>
-      <div>Draw: <b>${data.probabilities.draw}</b></div>
-      <div>Away win: <b>${data.probabilities.away_win}</b></div>
-    </div>
-  `;
-}
-
-async function loadWinProb() {
-  const season = document.getElementById("season").value;
-  const home = document.getElementById("home").value;
-  const away = document.getElementById("away").value;
-
-  const url = `/api/analytics/win-probability/?season=${encodeURIComponent(season)}&home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}`;
-  const res = await fetch(url);
-  const data = await res.json();
-
-  if (data.error) {
-    document.getElementById("winprob").innerHTML = `<div class="card"><b>Error:</b> ${data.error}</div>`;
-    return;
-  }
-  renderWinProb(data);
-}
-</script>
-</body>
-</html>
-"""
-    return HttpResponse(html)
+def dashboard (request):
+    return render (request, "dashboard.html")
